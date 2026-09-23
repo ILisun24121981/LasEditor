@@ -26,6 +26,7 @@ class LasController:
         # СВЯЗЫВАНИЕ СИГНАЛОВ ПАНЕЛИ НАВИГАЦИИ С КОНТРОЛЛЕРОМ
         self.view.combo_nav_target.currentTextChanged.connect(self.update_nav_validator)
         self.view.btn_nav_go.clicked.connect(self.execute_navigation)
+        self.view.btn_save_cof.clicked.connect(self.export_to_cof_dialog)
 
     def open_file_dialog(self):
         last_path = SettingsManager.get_last_path()
@@ -252,3 +253,80 @@ class LasController:
                 self.view.table.scrollTo(model_index, self.view.table.ScrollHint.PositionAtTop)
                 self.view.log_message(
                     f"Навигация: осуществлен переход на строку № {target_row_index + 1} по критерию [{target_type}].")
+
+    def export_to_cof_dialog(self):
+        """Парсит временные оси регулярным выражением и запускает асинхронный бинарный экспорт .cof."""
+        if not self.model.has_data():
+            return
+
+        import re
+        from views.dialogs import TimeColumnSelectorDialog
+        from utils.parser import LasSaveCofWorker
+
+        # Ищем все колонки, содержащие слово 'TIME' независимо от регистра и символов
+        time_pattern = re.compile(r'TIME', re.IGNORECASE)
+        time_matches = [col for col in self.model.df.columns if time_pattern.search(col)]
+
+        selected_time_col = ""
+
+        if len(time_matches) == 0:
+            QMessageBox.critical(
+                self.view, "Отсутствует ось времени",
+                "Невозможно сформировать файл .cof.\nВ текущей структуре таблицы не найдено ни одной кривой со словом 'TIME'."
+            )
+            return
+        elif len(time_matches) == 1:
+            selected_time_col = time_matches[0]
+        else:
+            dialog = TimeColumnSelectorDialog(time_matches, self.view)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                selected_time_col = dialog.get_selected_column()
+            else:
+                self.view.log_message("Экспорт .cof отменен пользователем.")
+                return
+
+        if not selected_time_col:
+            return
+
+        # ИСПРАВЛЕНО: Логика автоподбора имени полностью дублирует сохранение измененного LAS-файла
+        dn, bn = os.path.split(self.model.current_file_path)
+        np, ep = os.path.splitext(bn)
+
+        # Очищаем имя от прошлых меток редактора
+        while "_LasEditor" in np:
+            np = np[:np.find("_LasEditor")]
+
+        suffix_index = 0
+        while True:
+            suffix = "_LasEditor" if suffix_index == 0 else f"_LasEditor{suffix_index}"
+            # Проверяем занятость имени именно для расширения .cof
+            check_path = os.path.join(dn, f"{np}{suffix}.cof")
+            if not os.path.exists(check_path):
+                default_path = check_path
+                break
+            suffix_index += 1
+
+        fp, _ = QFileDialog.getSaveFileName(self.view, "Экспорт в бинарный файл телеметрии COF", default_path,
+                                            "COF Files (*.cof)")
+        if fp:
+            self.view.log_message(f"Запуск бинарной упаковки. В качестве времени выбрана кривая: [{selected_time_col}]")
+            self.view.set_ui_loading_state(True)
+
+            self.cof_worker = LasSaveCofWorker(fp, self.model.df, selected_time_col)
+            self.cof_worker.status_msg.connect(self.view.log_message)
+            self.cof_worker.success.connect(self.on_cof_export_success)
+            self.cof_worker.error.connect(self.on_cof_export_error)
+            self.cof_worker.start()
+
+    def on_cof_export_success(self, saved_path):
+        self.view.set_ui_loading_state(False)
+        self.view.log_message(f"Бинарный экспорт выполнен успешно. Создан файл: {os.path.basename(saved_path)}")
+        QMessageBox.information(
+            self.view, "Экспорт завершен",
+            f"Бинарный файл телеметрии успешно сформирован и записан на диск:\n\n{os.path.basename(saved_path)}"
+        )
+
+    def on_cof_export_error(self, err_msg):
+        self.view.set_ui_loading_state(False)
+        self.view.log_message(f"КРИТИЧЕСКАЯ ОШИБКА БИНАРНОГО ЭКСПОРТА: {err_msg}")
+        QMessageBox.critical(self.view, "Ошибка экспорта .cof", f"Не удалось сформировать бинарный файл:\n{err_msg}")

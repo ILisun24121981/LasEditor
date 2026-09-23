@@ -94,6 +94,11 @@ class MainWindow(QMainWindow):
         self.btn_save.setStyleSheet("background-color: #2ca02c; color: white; font-weight: bold; padding: 10px;")
         ll.addWidget(self.btn_save)
 
+        self.btn_save_cof = QPushButton("Сохранить .cof")
+        self.btn_save_cof.setEnabled(False)
+        self.btn_save_cof.setStyleSheet("background-color: #d35400; color: white; font-weight: bold; padding: 10px;")
+        ll.addWidget(self.btn_save_cof)
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         ll.addWidget(self.progress_bar)
@@ -273,9 +278,7 @@ class MainWindow(QMainWindow):
             self.log_area.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
     def set_ui_loading_state(self, is_loading):
-        """Управляет доступностью элементов интерфейса во время загрузки/экспорта/вычислений."""
         self.btn_open.setEnabled(not is_loading)
-
         has_data = hasattr(self, 'current_df') and self.current_df is not None
         active_state = not is_loading if has_data else False
 
@@ -284,20 +287,31 @@ class MainWindow(QMainWindow):
         self.btn_filter.setEnabled(active_state)
         self.btn_delete_col.setEnabled(active_state)
         self.btn_save.setEnabled(active_state)
+        self.btn_save_cof.setEnabled(active_state)  # ДОБАВЛЕНО
         self.btn_plot.setEnabled(active_state)
-
         self.progress_bar.setVisible(is_loading)
         if is_loading: self.progress_bar.setRange(0, 0)
 
     def on_file_loaded_successfully(self, df, null_value):
         """Срабатывает сразу после успешного чтения LAS-файла фоновым потоком."""
         self.current_df = df
+
+        # Синяя кнопка "Отобразить" активируется графически
         self.btn_plot.setStyleSheet("background-color: #2980b9; color: white; font-weight: bold; padding: 6px;")
 
+        # ИСПРАВЛЕНО: Полностью очищаем и заново наполняем списки доступных кривых для осей X и Y
         self.list_x.clear()
         self.list_y.clear()
+        if not df.empty:
+            for col in df.columns:
+                self.list_x.addItem(col)
+                self.list_y.addItem(col)
 
-        # Динамически наполняем выпадающий список быстрой навигации именами кривых ГИС
+            # Фокусируем выбор на самых первых кривых, чтобы пользователю не нужно было кликать вслепую
+            self.list_x.setCurrentRow(0)
+            self.list_y.setCurrentRow(0)
+
+        # Динамически наполняем выпадающий список быстрой навигации под таблицей
         self.combo_nav_target.clear()
         self.combo_nav_target.addItem("Строка")
         if not df.empty:
@@ -305,21 +319,23 @@ class MainWindow(QMainWindow):
                 self.combo_nav_target.addItem(col)
         self.edit_nav_value.setText("1")
 
-        # Включаем все кнопки панели редактирования данных
+        # Включаем все кнопки панели редактирования ГИС и панели графиков
         self.btn_trim.setEnabled(True)
         self.btn_coef.setEnabled(True)
         self.btn_filter.setEnabled(True)
         self.btn_delete_col.setEnabled(True)
         self.btn_save.setEnabled(True)
+        self.btn_save_cof.setEnabled(True)
         self.btn_plot.setEnabled(True)
-        self.btn_nav_go.setEnabled(True)  # Включаем кнопку Перейти
+        self.btn_nav_go.setEnabled(True)
 
+        # Включаем кнопки ручного добавления/удаления переменных на оси
         self.btn_add_x.setEnabled(True)
         self.btn_del_x.setEnabled(True)
         self.btn_add_y.setEnabled(True)
         self.btn_del_y.setEnabled(True)
 
-        self.log_message(f"Данные загружены. Строк: {len(df)}. Обнаружен маркер пустоты NULL VALUE = {null_value}")
+        self.log_message(f"Данные загружены. Строк: {len(df)}. Маркер пустоты: {null_value}")
         self.refresh_display_data(df)
 
     def refresh_display_data(self, df):

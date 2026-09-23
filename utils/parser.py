@@ -2,6 +2,7 @@ import os
 import pandas as pd
 import numpy as np
 import re
+import struct
 from PyQt6.QtCore import QThread, pyqtSignal
 
 
@@ -270,3 +271,83 @@ class LasCoefWorker(QThread):
 
         except Exception as e:
             self.status_msg.emit(f"КРИТИЧЕСКИЙ СБОЙ В ПОТОКЕ ВЫЧИСЛЕНИЙ: {str(e)}")
+
+
+class LasSaveCofWorker(QThread):
+    """Фоновый высокоскоростной поток для бинарной упаковки данных ГИС в формат .cof."""
+    status_msg = pyqtSignal(str)
+    success = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, filename, df, time_col):
+        super().__init__()
+        self.filename = filename
+        self.df = df
+        self.time_col = time_col
+
+    def run(self):
+        try:
+            self.status_msg.emit("Инициализация бинарного экспортера формата .cof...")
+
+            # Составляем список колонок данных (все, кроме времени)
+            data_cols = [col for col in self.df.columns if col != self.time_col]
+            n_data_fields = len(data_cols)
+
+            self.status_msg.emit(
+                f"Конфигурация кадра регистрации: 11 байт заголовок + {n_data_fields * 4} байт данных (float).")
+
+            # Извлекаем данные в numpy-массивы для мгновенного доступа
+            time_array = pd.to_numeric(self.df[self.time_col], errors='coerce').fillna(0).astype(np.uint64).to_numpy()
+
+            data_matrix = []
+            for col in data_cols:
+                data_matrix.append(pd.to_numeric(self.df[col], errors='coerce').fillna(0).astype(np.float32).to_numpy())
+
+            n_rows = len(self.df)
+            self.status_msg.emit(f"Запуск посимвольной упаковки потока телеметрии (всего: {n_rows} кадров)...")
+
+            log_step = max(1, n_rows // 4)
+
+            # Структура заголовка (Head): uint8 (B), uint64 (Q), uint16 (H) -> Общий размер 1 + 8 + 2 = 11 байт
+            header_struct = struct.Struct('<BQH')
+            # Структура блока данных (Data): массив из N элементов float (f)
+            data_struct = struct.Struct(f'<{n_data_fields}f')
+
+            with open(self.filename, 'wb') as f:
+                for i in range(n_rows):
+                    # Пошаговое логирование прогресса каждые 25%
+                    if i % log_step == 0 and i > 0:
+                        pct = int((i / n_rows) * 100)
+                        self.status_msg.emit(f"Сборка бинарного файла .cof: упаковано {pct}% кадров...")
+
+                    # 1. Формируем заголовок кадра Head (flags=0, Time=время, timeStamp=0)
+                    header_bytes = header_struct.pack(0, int(time_array[i]), 0)
+
+                    # 2. Формируем блок данных (вытаскиваем строку float-значений)
+                    row_floats = [data_matrix[j][i] for j in range(n_data_fields)]
+                    data_bytes = data_struct.pack(*row_floats)
+
+                    # Соединяем заголовок и данные в один непрерывный пакет для расчета CRC
+                    packet_bytes = header_bytes + data_bytes
+
+                    # 3. Расчет циклической контрольной суммы по вашему алгоритму
+                    check_sum = 0
+                    for byte in packet_bytes:
+                        check_sum ^= byte
+                        # Циклический сдвиг: сдвигаем влево на 7 бит и вправо на 1 бит, объединяя по OR (в рамках 8-битного байта)
+                        check_sum = ((check_sum << 7) & 0xFF) | (check_sum >> 1)
+                        if check_sum > 127:
+                            check_sum ^= 0x3C
+
+                    # Превращаем контрольную сумму в 1 байт
+                    checksum_byte = bytes([check_sum & 0xFF])
+
+                    # 4. Финальный разделитель кадра регистрации
+                    tail_byte = b'\xFF'
+
+                    # Записываем готовый упакованный кадр в файл
+                    f.write(packet_bytes + checksum_byte + tail_byte)
+
+            self.success.emit(self.filename)
+        except Exception as e:
+            self.error.emit(str(e))
