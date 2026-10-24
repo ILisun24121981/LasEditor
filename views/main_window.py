@@ -246,16 +246,26 @@ class MainWindow(QMainWindow):
         canvas_layout.setContentsMargins(0, 15, 0, 0)
 
         self.canvas = LasPlotCanvas(self)
+        self.canvas.marker_placed.connect(self.scroll_table_to_row)
         canvas_layout.addWidget(self.canvas)
         rs.addWidget(canvas_container)
 
         gtc = QWidget()
         gtl = QHBoxLayout(gtc)
         gtl.setContentsMargins(0, 2, 0, 2)
+
         self.btn_reset_zoom = QPushButton("Сбросить зум")
         self.btn_reset_zoom.clicked.connect(self.canvas.reset_zoom)
         self.btn_reset_zoom.setStyleSheet("font-weight: bold; padding: 5px 15px;")
         gtl.addWidget(self.btn_reset_zoom)
+
+        # ДОБАВЛЕНО: Кнопка принудительного удаления всех установленных маркеров
+        self.btn_clear_markers = QPushButton("Сбросить маркеры")
+        self.btn_clear_markers.clicked.connect(self.canvas.clear_all_markers)
+        self.btn_clear_markers.setStyleSheet(
+            "font-weight: bold; padding: 5px 15px; background-color: #7f8c8d; color: white;")
+        gtl.addWidget(self.btn_clear_markers)
+
         gtl.addStretch()
         rs.addWidget(gtc)
 
@@ -387,3 +397,16 @@ class MainWindow(QMainWindow):
             return
         self.log_message(f"Отрисовка графика: X -> {x_item.text()}, Y -> {y_item.text()}")
         self.canvas.plot_curve(self.current_df, y_item.text(), x_item.text())
+
+    # ДОБАВЛЕНО В КОНЕЦ КЛАССА MainWindow:
+    def scroll_table_to_row(self, row_index):
+        """Автоматически фокусирует и скроллит виртуальную таблицу к указанному индексу строки."""
+        if hasattr(self, 'table') and self.table is not None:
+            # Находим модельный индекс первой колонки для целевой строки
+            model_index = self.table_model.index(row_index, 0)
+            if model_index.isValid():
+                # Выделяем строку синим цветом (фокус)
+                self.table.setCurrentIndex(model_index)
+                # Прокручиваем QTableView так, чтобы эта строка встала САМОЙ ВЕРХНЕЙ на экране
+                self.table.scrollTo(model_index, QTableView.ScrollHint.PositionAtTop)
+                self.log_message(f"Синхронизация: график выставил маркер. Таблица перемещена к строке № {row_index + 1}.")
